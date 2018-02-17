@@ -15,12 +15,12 @@
 
 #define CONVERT_LINE_LEN 512
 #define CHARSET_CN "gbk"
+#define MAX_TICTOK 1   // Aging in next <tictok> scan
 
 namespace android {
 
 pthread_mutex_t *g_pItemListMutex = NULL;
 struct accessPointObjectItem *g_pItemList = NULL;
-struct accessPointObjectItem *g_pLastNode = NULL;
 
 
 static bool __isSsidEual(const vector<uint8_t>& ssid1,
@@ -133,7 +133,6 @@ static bool __isGBKString(const unsigned char *str, int length)
 void wifigbk_dumpSsid(const char* tag, const vector<uint8_t>& ssid)
 {
     char strbuf[200] = {0};
-    char *display = NULL;
     size_t i;
     size_t len_show;
 
@@ -145,10 +144,9 @@ void wifigbk_dumpSsid(const char* tag, const vector<uint8_t>& ssid)
 
         for (i = 0; i < len_show; i++)
            snprintf(&strbuf[i * 3], 4, " %02x", bytes[i]);
-        display = strbuf;
     }
 
-    LOG(INFO) << tag << "[len=" << len << "] " << display;
+    LOG(INFO) << tag << "[len=" << len << "] " << strbuf;
 }
 
 void wifigbk_dumpHistory() {
@@ -170,6 +168,7 @@ void wifigbk_addToHistory(const vector<uint8_t>& ssid,
 {
     struct accessPointObjectItem *pTmpItemNode = NULL;
     struct accessPointObjectItem *pItemNode = NULL;
+    struct accessPointObjectItem *pLastNode = NULL;
     bool entryExist = false;
 
     pthread_mutex_lock(g_pItemListMutex);
@@ -178,8 +177,9 @@ void wifigbk_addToHistory(const vector<uint8_t>& ssid,
     while (pTmpItemNode) {
         if (__isSsidEual(ssid, pTmpItemNode->ssid)) {
             entryExist = true;
-            break;
+            pTmpItemNode->tictok = MAX_TICTOK;
         }
+        pLastNode = pTmpItemNode;
         pTmpItemNode = pTmpItemNode->pNext;
     }
     if (!entryExist) {
@@ -191,21 +191,64 @@ void wifigbk_addToHistory(const vector<uint8_t>& ssid,
         pItemNode->utf_ssid = utf_ssid;
         pItemNode->ssid = ssid;
         pItemNode->pNext = NULL;
+        pItemNode->tictok = MAX_TICTOK;
 
         wifigbk_dumpSsid("wifigbk_addToHistory: GBK ", ssid);
         wifigbk_dumpSsid("wifigbk_addToHistory: UTF ", utf_ssid);
 
         if (NULL == g_pItemList) {
             g_pItemList = pItemNode;
-            g_pLastNode = g_pItemList;
         } else {
-            g_pLastNode->pNext = pItemNode;
-            g_pLastNode = pItemNode;
+            pLastNode->pNext = pItemNode;
         }
     }
 
 EXIT:
     pthread_mutex_unlock(g_pItemListMutex);
+}
+
+void wifigbk_ageOutHistory()
+{
+    struct accessPointObjectItem *agingNode = NULL;
+    struct accessPointObjectItem *pItemNode = NULL;
+    struct accessPointObjectItem *sItemNode = NULL;
+    vector<uint8_t> v;
+
+    LOG(INFO) << "Enters wifigbk_ageOutHistory";
+
+    pthread_mutex_lock(g_pItemListMutex);
+
+    pItemNode = g_pItemList;
+    sItemNode = g_pItemList;
+    while (pItemNode) {
+        if (pItemNode->tictok > 0) {
+            pItemNode->tictok --;
+            sItemNode = pItemNode;
+            pItemNode = pItemNode->pNext;
+        } else {
+            agingNode = pItemNode;
+
+            if (pItemNode == g_pItemList) {
+                g_pItemList = g_pItemList->pNext;
+                pItemNode = g_pItemList;
+                sItemNode = g_pItemList;
+            } else {
+                sItemNode->pNext = pItemNode->pNext;
+                pItemNode = pItemNode->pNext;
+            }
+
+            if (agingNode != NULL) {
+                wifigbk_dumpSsid("Aging GBK remove", agingNode->ssid);
+                agingNode->ssid.swap(v);
+                agingNode->utf_ssid.swap(v);
+                delete agingNode;
+                agingNode = NULL;
+            }
+        }
+    }
+
+    pthread_mutex_unlock(g_pItemListMutex);
+    return;
 }
 
 
@@ -237,7 +280,6 @@ int wifigbk_deinit() {
             pCurrentNode = pNextNode;
         }
         g_pItemList = NULL;
-        g_pLastNode = NULL;
 
         pthread_mutex_unlock(g_pItemListMutex);
         pthread_mutex_destroy(g_pItemListMutex);
