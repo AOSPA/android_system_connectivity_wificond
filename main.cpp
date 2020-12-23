@@ -130,7 +130,6 @@ int main(int argc, char** argv) {
       &netlink_utils,
       &scan_utils));
   RegisterServiceOrCrash(server);
-
   WifiKeystoreHalConnector keystore_connector;
   keystore_connector.start();
 
